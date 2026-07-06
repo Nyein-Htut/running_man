@@ -13,7 +13,7 @@ function setStatus(text, kind) {
 
 function setLoading(button, isLoading, labelIdle, labelBusy) {
   button.disabled = isLoading;
-  button.querySelector('.tear-btn-label').textContent = isLoading ? labelBusy : labelIdle;
+  button.querySelector('.btn-label').textContent = isLoading ? labelBusy : labelIdle;
 }
 
 function showLoadingSkeleton() {
@@ -27,9 +27,19 @@ function showLoadingSkeleton() {
 function showError(message) {
   resultsArea.innerHTML = `
     <div class="error-box">
-      <span class="err-emoji">🚫</span>
+      <span class="err-mark">✦</span>
       <p>${message}</p>
     </div>`;
+}
+
+function scrollResultsIntoView() {
+  // Only nudge the page if the results panel isn't already fully visible —
+  // keeps everything docked under the search card instead of forcing a jump.
+  const rect = resultsArea.getBoundingClientRect();
+  const fullyVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
+  if (!fullyVisible) {
+    resultsArea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
 
 function clearActiveChips() {
@@ -63,6 +73,7 @@ async function searchEpisode() {
 
     setStatus('Data retrieved successfully.', 'success');
     renderEpisodeCard(data);
+    scrollResultsIntoView();
   } catch (err) {
     setStatus('Network error — try again.', 'error');
     showError('Could not reach the server. Check your connection and retry.');
@@ -136,6 +147,7 @@ async function searchKeyword() {
 
     setStatus(`Found ${data.count} match${data.count !== 1 ? 'es' : ''} for "${data.query}".`, 'success');
     renderResultList(data.results, `Results for "${data.query}"`, data.count);
+    scrollResultsIntoView();
   } catch (err) {
     setStatus('Network error — try again.', 'error');
     showError('Could not reach the server. Check your connection and retry.');
@@ -165,6 +177,7 @@ async function loadFaqCategory(slug, chipEl) {
 
     setStatus(`Found ${data.count} episode${data.count !== 1 ? 's' : ''} tagged "${data.label}".`, 'success');
     renderResultList(data.results, `${data.emoji} ${data.label}`, data.count);
+    scrollResultsIntoView();
   } catch (err) {
     setStatus('Network error — try again.', 'error');
     showError('Could not reach the server. Check your connection and retry.');
@@ -200,8 +213,8 @@ function renderResultList(results, headerText, count) {
       <span class="result-year">${escapeHtml(ep.Year)}</span>`;
     item.addEventListener('click', () => {
       episodeInput.value = ep.Episode;
-      window.scrollTo({ top: 0, behavior: 'smooth' });
       renderEpisodeCard(ep);
+      scrollResultsIntoView();
       setStatus(`Showing Episode ${ep.Episode}.`, 'success');
     });
     container.appendChild(item);
