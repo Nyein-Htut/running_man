@@ -118,6 +118,62 @@ function renderEpisodeCard(data) {
       <div class="field-value">${escapeHtml(data[key] || 'N/A')}</div>`;
     container.appendChild(row);
   });
+
+  loadCastCards(data['Guest(s)']);
+}
+
+/* ---------------------------------------------------------------------
+   Cast cards — headshots pulled from Wikipedia, Google-knowledge-panel style
+   --------------------------------------------------------------------- */
+async function loadCastCards(guestString) {
+  if (!guestString || guestString === 'N/A') return;
+
+  const episodeCard = document.querySelector('.episode-card');
+  if (!episodeCard) return;
+
+  const castSection = document.createElement('div');
+  castSection.className = 'cast-section';
+  castSection.innerHTML = `
+    <p class="cast-heading">🎬 Cast</p>
+    <div class="cast-grid" id="castGrid"><div class="cast-loading"><span class="spinner"></span> Fetching cast photos...</div></div>`;
+  episodeCard.appendChild(castSection);
+
+  try {
+    const res = await fetch(`/api/guest-images?names=${encodeURIComponent(guestString)}`);
+    const data = await res.json();
+    const grid = document.getElementById('castGrid');
+    if (!res.ok || !data.guests || data.guests.length === 0) {
+      grid.innerHTML = `<p class="cast-empty">No cast photos found for this lineup.</p>`;
+      return;
+    }
+
+    grid.innerHTML = '';
+    data.guests.forEach((g, i) => {
+      const card = document.createElement(g.wiki_url ? 'a' : 'div');
+      if (g.wiki_url) {
+        card.href = g.wiki_url;
+        card.target = '_blank';
+        card.rel = 'noopener';
+      }
+      card.className = 'cast-card';
+      card.style.animationDelay = `${i * 60}ms`;
+
+      const initials = g.name.split(' ').map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+
+      card.innerHTML = `
+        <div class="cast-photo-wrap">
+          ${g.image
+            ? `<img class="cast-photo" src="${g.image}" alt="${escapeHtml(g.name)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=&quot;cast-initials&quot;>${initials}</div>'">`
+            : `<div class="cast-initials">${initials}</div>`}
+        </div>
+        <div class="cast-name">${escapeHtml(g.name)}</div>
+        ${g.extract ? `<div class="cast-extract">${escapeHtml(g.extract)}</div>` : ''}`;
+      grid.appendChild(card);
+    });
+  } catch (err) {
+    const grid = document.getElementById('castGrid');
+    if (grid) grid.innerHTML = `<p class="cast-empty">Couldn't load cast photos — try again.</p>`;
+  }
 }
 
 /* ---------------------------------------------------------------------
