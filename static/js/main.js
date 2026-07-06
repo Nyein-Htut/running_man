@@ -47,6 +47,12 @@ function clearActiveChips() {
 }
 
 /* ---------------------------------------------------------------------
+   Back-navigation state — remembers the most recent list view (keyword
+   search or FAQ theme) so an episode opened from that list can return to it.
+   --------------------------------------------------------------------- */
+let lastListView = null; // { results, headerText, count }
+
+/* ---------------------------------------------------------------------
    Single episode lookup
    --------------------------------------------------------------------- */
 async function searchEpisode() {
@@ -82,14 +88,21 @@ async function searchEpisode() {
   }
 }
 
-function renderEpisodeCard(data) {
+function renderEpisodeCard(data, showBackArrow) {
   const guestCount = (data['Guest(s)'] || '')
     .split(',')
     .map(g => g.trim())
     .filter(Boolean).length || 1;
 
+  const backArrowHtml = (showBackArrow && lastListView)
+    ? `<button class="back-arrow-btn" id="backToListBtn" type="button" aria-label="Back to list">
+         <span class="back-arrow-icon">←</span> Back to list
+       </button>`
+    : '';
+
   resultsArea.innerHTML = `
     <div class="episode-card">
+      ${backArrowHtml}
       <p class="eyebrow-tag">EPISODE ${data.Episode}</p>
       <h3>${escapeHtml(data.Location || 'Location unknown')}</h3>
       <div class="chip-row">
@@ -99,6 +112,10 @@ function renderEpisodeCard(data) {
       </div>
       <div id="fieldRows"></div>
     </div>`;
+
+  if (showBackArrow && lastListView) {
+    document.getElementById('backToListBtn').addEventListener('click', goBackToList);
+  }
 
   const fields = [
     ['📅', 'Air Date'],
@@ -246,6 +263,8 @@ function renderResultList(results, headerText, count) {
     return;
   }
 
+  lastListView = { results, headerText, count };
+
   const cappedNote = count > results.length
     ? ` (showing first ${results.length})`
     : '';
@@ -269,12 +288,20 @@ function renderResultList(results, headerText, count) {
       <span class="result-year">${escapeHtml(ep.Year)}</span>`;
     item.addEventListener('click', () => {
       episodeInput.value = ep.Episode;
-      renderEpisodeCard(ep);
+      renderEpisodeCard(ep, true);
       scrollResultsIntoView();
       setStatus(`Showing Episode ${ep.Episode}.`, 'success');
     });
     container.appendChild(item);
   });
+}
+
+function goBackToList() {
+  if (!lastListView) return;
+  const { results, headerText, count } = lastListView;
+  renderResultList(results, headerText, count);
+  scrollResultsIntoView();
+  setStatus(`Back to "${headerText}".`, 'success');
 }
 
 /* ---------------------------------------------------------------------
