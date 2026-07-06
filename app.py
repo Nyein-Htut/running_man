@@ -60,6 +60,17 @@ COLUMN_MATCHERS = [
 ]
 
 
+def direct_rows(table):
+    """All <tr> that belong directly to this table, excluding rows that
+    actually live inside a nested table embedded in one of this table's
+    cells. Some special episodes (e.g. multi-couple 'blind date' specials)
+    embed a sub-table inside the Guest(s) cell to list each pair — without
+    this filter, table.find_all('tr') would also return that sub-table's
+    rows, and row.find_all('td') would also return its cells, silently
+    shifting every column index for that row."""
+    return [tr for tr in table.find_all("tr") if tr.find_parent("table") is table]
+
+
 def map_table_columns(table):
     """Inspect a wikitable's header row and return {field_name: td_index}.
 
@@ -68,8 +79,8 @@ def map_table_columns(table):
     header row with recognizable <th> labels is found.
     """
     header_row = None
-    for row in table.find_all("tr"):
-        ths = row.find_all("th")
+    for row in direct_rows(table):
+        ths = row.find_all("th", recursive=False)
         # A real header row has several th's with text; the episode-number
         # rows have exactly one th (the ep. number) followed by td's.
         if len(ths) >= 3:
@@ -120,9 +131,9 @@ def scrape_year(year, force=False):
                     raw = re.sub(r"(,\s*)+", ", ", raw).strip(", ").strip()
                     return clean_text(raw) or "N/A"
 
-                for row in table.find_all("tr"):
-                    th_cells = row.find_all("th")
-                    td_cells = row.find_all("td")
+                for row in direct_rows(table):
+                    th_cells = row.find_all("th", recursive=False)
+                    td_cells = row.find_all("td", recursive=False)
 
                     if th_cells and len(td_cells) >= 4:
                         ep_text = clean_text(th_cells[0].text)
