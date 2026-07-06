@@ -1,9 +1,6 @@
-import json
-import os
 import re
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import requests
@@ -31,86 +28,6 @@ ALL_YEARS = [y for _, y in YEAR_BOUNDARIES] + [DEFAULT_LATEST_YEAR]
 _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 CACHE_TTL_SECONDS = 60 * 60 * 12  # 12 hours
-
-# ---------------------------------------------------------------------------
-# MyDramaList episode titles — Wikipedia has no "Title" column for this show
-# (Running Man isn't titled per-episode the way a sitcom is), but MyDramaList
-# maintains one, e.g. https://mydramalist.com/25565-running-man/episode/27
-# -> "Phantom of the Running Man". Not every episode has a title on MDL
-# (recap-only entries just show the site/guests), in which case we fall back
-# to the synthesized Location+Guest(s) title below. Cached for a long time
-# since a title, once set, essentially never changes.
-# ---------------------------------------------------------------------------
-MDL_SHOW_SLUG = "25565-running-man"
-MDL_EPISODE_URL = f"https://mydramalist.com/{MDL_SHOW_SLUG}/episode/{{}}"
-MDL_TITLE_CACHE = {}
-MDL_TITLE_LOCK = threading.Lock()
-MDL_TITLE_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
-
-# Pre-scraped titles committed alongside the app (see scripts/scrape_mdl_titles.py
-# and its module docstring for why this is scraped offline rather than live —
-# MyDramaList's bot protection blocks plain server-side requests from
-# datacenter IPs like Render's almost 100% of the time). Keys are episode
-# numbers as strings; a value of null/None means MDL genuinely has no
-# distinct title for that episode (not a fetch failure).
-_STATIC_TITLES_PATH = os.path.join(os.path.dirname(__file__), "data", "episode_titles.json")
-try:
-    with open(_STATIC_TITLES_PATH, "r", encoding="utf-8") as _f:
-        STATIC_EPISODE_TITLES = json.load(_f)
-except (FileNotFoundError, json.JSONDecodeError):
-    STATIC_EPISODE_TITLES = {}
-
-# Matches meta property="og:title" content="Running Man Episode 27: Phantom of the Running Man"
-_MDL_OGTITLE_RE = re.compile(r'property="og:title"\s+content="([^"]+)"')
-# Strips the "Running Man Episode 27: " prefix, leaving just the title
-_MDL_PREFIX_RE = re.compile(r"^Running Man Episode\s+\d+\s*[:\-]\s*(.+)$", re.IGNORECASE)
-
-
-def fetch_mdl_title(ep_num):
-    """Look up Episode `ep_num`'s real title. Checks the pre-scraped static
-    dataset first (fast, reliable); only falls back to a live MyDramaList
-    request for episodes not yet present there (e.g. ones that aired after
-    the dataset was last regenerated). Returns None if the episode has no
-    distinct title, or the live fallback fails."""
-    key = str(ep_num)
-    if key in STATIC_EPISODE_TITLES:
-        return STATIC_EPISODE_TITLES[key]
-
-    with MDL_TITLE_LOCK:
-        cached = MDL_TITLE_CACHE.get(ep_num)
-        if cached and (time.time() - cached["fetched_at"] < MDL_TITLE_TTL_SECONDS):
-            return cached["title"]
-
-    title = None
-    try:
-        res = requests.get(MDL_EPISODE_URL.format(ep_num), headers=HEADERS, timeout=8)
-        if res.status_code != 200:
-            # Likely sign of anti-bot blocking (403/429) rather than a genuine
-            # 404 — MDL uses Cloudflare-style protection that can reject
-            # plain server-side requests. Check Render logs for this line.
-            print(f"[mdl_title] ep {ep_num}: HTTP {res.status_code}, body starts: {res.text[:200]!r}")
-        else:
-            match = _MDL_OGTITLE_RE.search(res.text)
-            if not match:
-                print(f"[mdl_title] ep {ep_num}: got HTTP 200 but no og:title meta found "
-                      f"(page may require JS / different markup). Body length: {len(res.text)}")
-            else:
-                og_title = clean_text(match.group(1))
-                prefix_match = _MDL_PREFIX_RE.match(og_title)
-                if prefix_match:
-                    candidate = prefix_match.group(1).strip()
-                    # If MDL has no real title it just repeats "Episode N" —
-                    # not worth surfacing as a "title".
-                    if candidate and not re.match(r"^Episode\s+\d+$", candidate, re.IGNORECASE):
-                        title = candidate
-                if title is None:
-                    print(f"[mdl_title] ep {ep_num}: og:title was {og_title!r} — no distinct title parsed out")
-    except requests.RequestException as exc:
-        print(f"[mdl_title] ep {ep_num}: request failed: {exc!r}")
-
-    with MDL_TITLE_LOCK:
-        MDL_TITLE_CACHE[ep_num] = {"title": title, "fetched_at": time.time()}
-    return title
 
 
 def clean_text(text):
@@ -157,6 +74,68 @@ def direct_rows(table):
 MAX_TABLE_COLUMNS = 24  # safety cap against pathological rowspan bookkeeping
 
 
+def extract_guest_text(cell):
+    """Extract guest names while preserving one comma per guest."""
+
+    cell = BeautifulSoup(str(cell), "html.parser")
+
+    # Case 1: Lists
+    items = cell.find_all("li", recursive=False)
+    if items:
+        guests = [
+            clean_text(li.get_text(" ", strip=True))
+            for li in items
+            if clean_text(li.get_text(" ", strip=True))
+        ]
+        return ", ".join(guests)
+
+    # Case 2: <br> separators
+    if cell.find("br"):
+        for br in cell.find_all("br"):
+            br.replace_with("|||")
+
+        parts = [
+            clean_text(x)
+            for x in cell.get_text(" ", strip=True).split("|||")
+            if clean_text(x)
+        ]
+        return ", ".join(parts)
+
+    # Case 3: Multiple top-level links (Episode 402 style)
+    links = cell.find_all("a")
+
+    if len(links) >= 2:
+        guests = []
+        used = set()
+
+        for a in links:
+            name = clean_text(a.get_text(" ", strip=True))
+
+            # include immediate text after the link
+            if a.next_sibling and isinstance(a.next_sibling, str):
+                tail = a.next_sibling.strip()
+                if tail.startswith("("):
+                    name += " " + tail
+
+            if name and name not in used:
+                guests.append(name)
+                used.add(name)
+
+        if guests:
+            return ", ".join(guests)
+
+    # fallback
+    return clean_text(cell.get_text(" ", strip=True))
+
+
+def extract_normal_text(cell):
+    cell = BeautifulSoup(str(cell), "html.parser")
+
+    text = cell.get_text(" ", strip=True)
+    text = re.sub(r"\s{2,}", " ", text)
+
+    return clean_text(text)
+
 def build_grid(table):
     """Convert a wikitable into a list of rows, each a list of (text, is_th)
     tuples aligned to real column positions — correctly accounting for
@@ -186,8 +165,8 @@ def build_grid(table):
             current_cell is not None or col_idx in pending
         ):
             if col_idx in pending and pending[col_idx][0] > 0:
-                remaining, text, is_th = pending[col_idx]
-                row_result.append((text, is_th))
+                remaining, saved_cell, is_th = pending[col_idx]
+                row_result.append((saved_cell, is_th))
                 if remaining - 1 <= 0:
                     del pending[col_idx]
                 else:
@@ -207,26 +186,13 @@ def build_grid(table):
             except ValueError:
                 rowspan = 1
 
-            # NOTE: joining with ", " here used to mangle cells that already
-            # contain their own commas/parentheses (e.g. a <br> + "(" + a
-            # linked district + ", " + a linked city + ")" as separate text
-            # nodes) into garbage like "Seoul Arts Center, (, Seocho
-            # District, Seoul, )". Joining with a plain space and then
-            # tidying punctuation spacing preserves the original commas
-            # instead of duplicating them.
-            raw = current_cell.get_text(separator=" ")
-            raw = re.sub(r"\s+", " ", raw)
-            raw = re.sub(r"\s+([),.:;])", r"\1", raw)
-            raw = re.sub(r"([(])\s+", r"\1", raw)
-            raw = re.sub(r",\s*,", ",", raw)
-            raw = raw.strip(" ,")
-            text = clean_text(raw)
+            
             is_th = current_cell.name == "th"
 
             for _ in range(max(colspan, 1)):
-                row_result.append((text, is_th))
+                row_result.append((current_cell, is_th))
                 if rowspan > 1:
-                    pending[col_idx] = [rowspan - 1, text, is_th]
+                    pending[col_idx] = [rowspan - 1, current_cell, is_th]
                 col_idx += 1
 
             current_cell = next(cell_iter, None)
@@ -253,9 +219,10 @@ def map_table_columns(grid):
     if not header_row:
         return None
 
-    # The first column is usually "Ep." — the rest correspond to positions
-    # within row[1:].
-    labels = [text.lower() for text, _ in header_row[1:]]
+    labels = [
+        extract_normal_text(cell).lower()
+        for cell, _ in header_row[1:]
+    ]
 
     mapping = {}
     for col_index, label in enumerate(labels):
@@ -263,21 +230,6 @@ def map_table_columns(grid):
             if field_name not in mapping and any(k in label for k in keywords):
                 mapping[field_name] = col_index
     return mapping or None
-
-
-def build_display_title(location, guests_raw):
-    """Wikipedia's Running Man tables have no 'Title' column — the show
-    doesn't carry per-episode titles the way sitcoms do. Location alone
-    (the old stand-in) reads like a stray address, so synthesize something
-    that actually reads like a title: the venue plus the standout guest(s),
-    e.g. 'Seoul Arts Center ft. Max Changmin & U-Know Yunho'."""
-    loc = location if location and location != "N/A" else "Unknown Location"
-    names = split_guest_names(guests_raw)
-    if not names:
-        return loc
-    shown = names[:2]
-    suffix = " & more" if len(names) > 2 else ""
-    return f"{loc} ft. {' & '.join(shown)}{suffix}"
 
 
 def scrape_year(year, force=False):
@@ -302,15 +254,23 @@ def scrape_year(year, force=False):
 
                 def cell(data_cells, field):
                     idx = col_map.get(field)
+
                     if idx is None or idx >= len(data_cells):
                         return "N/A"
-                    text = data_cells[idx][0]
+
+                    cell_obj = data_cells[idx][0]
+
+                    if field == "Guest(s)":
+                        text = extract_guest_text(cell_obj)
+                    else:
+                        text = extract_normal_text(cell_obj)
+
                     return text or "N/A"
 
                 for row in grid:
                     if not row or not row[0][1]:  # first cell must be a <th>
                         continue
-                    ep_text = row[0][0]
+                    ep_text = extract_normal_text(row[0][0])
                     data_cells = row[1:]
 
                     if not ep_text.isdigit() or len(data_cells) < 4:
@@ -319,9 +279,6 @@ def scrape_year(year, force=False):
                     episodes.append({
                         "Episode": ep_text,
                         "Year": year,
-                        "Title": build_display_title(
-                            cell(data_cells, "Location"), cell(data_cells, "Guest(s)")
-                        ),
                         "Air Date": cell(data_cells, "Air Date"),
                         "Location": cell(data_cells, "Location"),
                         "Guest(s)": cell(data_cells, "Guest(s)"),
@@ -439,8 +396,6 @@ def split_guest_names(raw):
     """'Guest(s)' cell is a free-text, comma/'and'-separated list of names."""
     if not raw or raw == "N/A":
         return []
-    if re.match(r"^\s*no\s+guests?\s*$", raw, re.IGNORECASE):
-        return []  # the literal placeholder text, not an actual guest name
     raw = re.sub(r"\(.*?\)", "", raw)  # drop parenthetical roles/notes
     parts = re.split(r",| and |&", raw)
     names = [p.strip() for p in parts if p.strip() and len(p.strip()) > 1]
@@ -521,40 +476,7 @@ def api_episode(ep_num):
     if not match:
         return jsonify({"error": f"No record found for Episode {ep_num}."}), 404
 
-    # Overlay the real MyDramaList title over the synthesized Location+Guest(s)
-    # fallback, when one exists. Copy the dict so the shared _CACHE entry
-    # (reused across requests) isn't mutated.
-    result = dict(match)
-    mdl_title = fetch_mdl_title(ep_num)
-    if mdl_title:
-        result["Title"] = mdl_title
-    return jsonify(result)
-
-
-@app.route("/api/episode-titles")
-def api_episode_titles():
-    """Batch MyDramaList title lookup for list views, e.g.
-    /api/episode-titles?nums=24,25,26 -> {"titles": {"24": "...", "25": null, ...}}
-    Fetched in parallel since MDL doesn't offer a batch API of its own."""
-    raw = request.args.get("nums", "").strip()
-    if not raw:
-        return jsonify({"error": "Provide a comma-separated 'nums' param."}), 400
-
-    nums = []
-    for part in raw.split(","):
-        part = part.strip()
-        if part.isdigit():
-            nums.append(int(part))
-    nums = nums[:60]  # keep batches sane, matches result caps elsewhere
-
-    if not nums:
-        return jsonify({"error": "No valid episode numbers provided."}), 400
-
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        fetched = list(pool.map(fetch_mdl_title, nums))
-
-    titles = {str(n): t for n, t in zip(nums, fetched)}
-    return jsonify({"titles": titles})
+    return jsonify(match)
 
 
 @app.route("/api/search")
