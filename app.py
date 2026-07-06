@@ -43,6 +43,52 @@ def get_year_for_episode(ep_num):
     return DEFAULT_LATEST_YEAR
 
 
+# Recognized header labels, matched case-insensitively as substrings against
+# each table's actual <th> header row. This replaces the old approach of
+# assuming a fixed column order (Air Date, Title, Guest(s), Teams, Mission,
+# Results) — that layout doesn't match Wikipedia's real tables, which have
+# NO "Title" column. The real order is Air Date, Guest(s), Location, Teams,
+# Mission, Results, so the old fixed-index code was silently reading the
+# Location cell into the "Guest(s)" field.
+COLUMN_MATCHERS = [
+    ("Air Date", ["air date", "airdate", "broadcast date", "date"]),
+    ("Guest(s)", ["guest"]),
+    ("Location", ["location", "landmark"]),
+    ("Teams", ["team"]),
+    ("Mission", ["mission"]),
+    ("Results", ["result"]),
+]
+
+
+def map_table_columns(table):
+    """Inspect a wikitable's header row and return {field_name: td_index}.
+
+    td_index is the position within the <td> cells of a data row (i.e. NOT
+    counting the leading <th> episode-number cell). Returns None if no
+    header row with recognizable <th> labels is found.
+    """
+    header_row = None
+    for row in table.find_all("tr"):
+        ths = row.find_all("th")
+        # A real header row has several th's with text; the episode-number
+        # rows have exactly one th (the ep. number) followed by td's.
+        if len(ths) >= 3:
+            header_row = ths
+            break
+    if not header_row:
+        return None
+
+    # The first th is usually "Ep." — the rest correspond to td positions.
+    labels = [clean_text(th.get_text(" ")).lower() for th in header_row[1:]]
+
+    mapping = {}
+    for td_index, label in enumerate(labels):
+        for field_name, keywords in COLUMN_MATCHERS:
+            if field_name not in mapping and any(k in label for k in keywords):
+                mapping[field_name] = td_index
+    return mapping or None
+
+
 def scrape_year(year, force=False):
     """Scrape (and cache) every episode row for a given year page."""
     with _CACHE_LOCK:
@@ -58,6 +104,16 @@ def scrape_year(year, force=False):
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             for table in soup.find_all("table", class_="wikitable"):
+                col_map = map_table_columns(table)
+                if not col_map:
+                    continue  # not an episode table (e.g. ratings/awards table)
+
+                def cell(td_cells, field):
+                    idx = col_map.get(field)
+                    if idx is None or idx >= len(td_cells):
+                        return "N/A"
+                    return clean_text(td_cells[idx].text) or "N/A"
+
                 for row in table.find_all("tr"):
                     th_cells = row.find_all("th")
                     td_cells = row.find_all("td")
@@ -69,12 +125,12 @@ def scrape_year(year, force=False):
                         episodes.append({
                             "Episode": ep_text,
                             "Year": year,
-                            "Air Date": clean_text(td_cells[0].text),
-                            "Title": clean_text(td_cells[1].text),
-                            "Guest(s)": clean_text(td_cells[2].text) or "N/A",
-                            "Teams": clean_text(td_cells[3].text) or "N/A",
-                            "Mission": clean_text(td_cells[4].text) if len(td_cells) > 4 else "N/A",
-                            "Results": clean_text(td_cells[5].text) if len(td_cells) > 5 else "N/A",
+                            "Air Date": cell(td_cells, "Air Date"),
+                            "Location": cell(td_cells, "Location"),
+                            "Guest(s)": cell(td_cells, "Guest(s)"),
+                            "Teams": cell(td_cells, "Teams"),
+                            "Mission": cell(td_cells, "Mission"),
+                            "Results": cell(td_cells, "Results"),
                         })
     except requests.RequestException:
         pass
@@ -84,6 +140,8 @@ def scrape_year(year, force=False):
         if episodes or year not in _CACHE:
             _CACHE[year] = {"data": episodes, "fetched_at": time.time()}
         return _CACHE[year]["data"]
+
+
 
 
 def get_all_episodes():
@@ -161,7 +219,7 @@ FAQ_PRESETS = [
 
 def matches_keywords(ep, keywords):
     haystack = " ".join([
-        ep.get("Title", ""), ep.get("Mission", ""), ep.get("Guest(s)", "")
+        ep.get("Location", ""), ep.get("Mission", ""), ep.get("Guest(s)", "")
     ]).lower()
     return any(k in haystack for k in keywords)
 
@@ -278,7 +336,7 @@ def api_search():
     all_eps = get_all_episodes()
     results = [
         e for e in all_eps
-        if query in e["Title"].lower()
+        if query in e["Location"].lower()
         or query in e["Guest(s)"].lower()
         or query in e["Mission"].lower()
     ]
