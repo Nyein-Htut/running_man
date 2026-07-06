@@ -1,6 +1,7 @@
 import re
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import requests
@@ -28,6 +29,56 @@ ALL_YEARS = [y for _, y in YEAR_BOUNDARIES] + [DEFAULT_LATEST_YEAR]
 _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 CACHE_TTL_SECONDS = 60 * 60 * 12  # 12 hours
+
+# ---------------------------------------------------------------------------
+# MyDramaList episode titles — Wikipedia has no "Title" column for this show
+# (Running Man isn't titled per-episode the way a sitcom is), but MyDramaList
+# maintains one, e.g. https://mydramalist.com/25565-running-man/episode/27
+# -> "Phantom of the Running Man". Not every episode has a title on MDL
+# (recap-only entries just show the site/guests), in which case we fall back
+# to the synthesized Location+Guest(s) title below. Cached for a long time
+# since a title, once set, essentially never changes.
+# ---------------------------------------------------------------------------
+MDL_SHOW_SLUG = "25565-running-man"
+MDL_EPISODE_URL = f"https://mydramalist.com/{MDL_SHOW_SLUG}/episode/{{}}"
+MDL_TITLE_CACHE = {}
+MDL_TITLE_LOCK = threading.Lock()
+MDL_TITLE_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
+
+# Matches meta property="og:title" content="Running Man Episode 27: Phantom of the Running Man"
+_MDL_OGTITLE_RE = re.compile(r'property="og:title"\s+content="([^"]+)"')
+# Strips the "Running Man Episode 27: " prefix, leaving just the title
+_MDL_PREFIX_RE = re.compile(r"^Running Man Episode\s+\d+\s*[:\-]\s*(.+)$", re.IGNORECASE)
+
+
+def fetch_mdl_title(ep_num):
+    """Look up Episode `ep_num`'s real title from MyDramaList. Returns None
+    if the episode has no distinct title there, or the request fails."""
+    with MDL_TITLE_LOCK:
+        cached = MDL_TITLE_CACHE.get(ep_num)
+        if cached and (time.time() - cached["fetched_at"] < MDL_TITLE_TTL_SECONDS):
+            return cached["title"]
+
+    title = None
+    try:
+        res = requests.get(MDL_EPISODE_URL.format(ep_num), headers=HEADERS, timeout=8)
+        if res.status_code == 200:
+            match = _MDL_OGTITLE_RE.search(res.text)
+            if match:
+                og_title = clean_text(match.group(1))
+                prefix_match = _MDL_PREFIX_RE.match(og_title)
+                if prefix_match:
+                    candidate = prefix_match.group(1).strip()
+                    # If MDL has no real title it just repeats "Episode N" —
+                    # not worth surfacing as a "title".
+                    if candidate and not re.match(r"^Episode\s+\d+$", candidate, re.IGNORECASE):
+                        title = candidate
+    except requests.RequestException:
+        pass
+
+    with MDL_TITLE_LOCK:
+        MDL_TITLE_CACHE[ep_num] = {"title": title, "fetched_at": time.time()}
+    return title
 
 
 def clean_text(text):
@@ -436,7 +487,40 @@ def api_episode(ep_num):
     if not match:
         return jsonify({"error": f"No record found for Episode {ep_num}."}), 404
 
-    return jsonify(match)
+    # Overlay the real MyDramaList title over the synthesized Location+Guest(s)
+    # fallback, when one exists. Copy the dict so the shared _CACHE entry
+    # (reused across requests) isn't mutated.
+    result = dict(match)
+    mdl_title = fetch_mdl_title(ep_num)
+    if mdl_title:
+        result["Title"] = mdl_title
+    return jsonify(result)
+
+
+@app.route("/api/episode-titles")
+def api_episode_titles():
+    """Batch MyDramaList title lookup for list views, e.g.
+    /api/episode-titles?nums=24,25,26 -> {"titles": {"24": "...", "25": null, ...}}
+    Fetched in parallel since MDL doesn't offer a batch API of its own."""
+    raw = request.args.get("nums", "").strip()
+    if not raw:
+        return jsonify({"error": "Provide a comma-separated 'nums' param."}), 400
+
+    nums = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            nums.append(int(part))
+    nums = nums[:60]  # keep batches sane, matches result caps elsewhere
+
+    if not nums:
+        return jsonify({"error": "No valid episode numbers provided."}), 400
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        fetched = list(pool.map(fetch_mdl_title, nums))
+
+    titles = {str(n): t for n, t in zip(nums, fetched)}
+    return jsonify({"titles": titles})
 
 
 @app.route("/api/search")
