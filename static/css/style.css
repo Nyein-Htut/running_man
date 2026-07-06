@@ -339,6 +339,31 @@ main {
 /* --- Episode card (single lookup) --- */
 .episode-card { animation: rise 0.45s ease both; }
 
+.back-arrow-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--edge);
+  border-radius: 20px;
+  padding: 6px 14px 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--gold-hi);
+  cursor: pointer;
+  margin-bottom: 16px;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.back-arrow-btn:hover {
+  border-color: var(--gold-dk);
+  background: var(--gold-wash);
+  transform: translateX(-2px);
+}
+
+.back-arrow-icon { font-size: 14px; line-height: 1; }
+
 .episode-card .eyebrow-tag {
   font-family: var(--font-mono);
   color: var(--gold);
