@@ -124,8 +124,19 @@ def build_grid(table):
             except ValueError:
                 rowspan = 1
 
-            raw = current_cell.get_text(separator=", ")
-            raw = re.sub(r"(,\s*)+", ", ", raw).strip(", ").strip()
+            # NOTE: joining with ", " here used to mangle cells that already
+            # contain their own commas/parentheses (e.g. a <br> + "(" + a
+            # linked district + ", " + a linked city + ")" as separate text
+            # nodes) into garbage like "Seoul Arts Center, (, Seocho
+            # District, Seoul, )". Joining with a plain space and then
+            # tidying punctuation spacing preserves the original commas
+            # instead of duplicating them.
+            raw = current_cell.get_text(separator=" ")
+            raw = re.sub(r"\s+", " ", raw)
+            raw = re.sub(r"\s+([),.:;])", r"\1", raw)
+            raw = re.sub(r"([(])\s+", r"\1", raw)
+            raw = re.sub(r",\s*,", ",", raw)
+            raw = raw.strip(" ,")
             text = clean_text(raw)
             is_th = current_cell.name == "th"
 
@@ -171,6 +182,21 @@ def map_table_columns(grid):
     return mapping or None
 
 
+def build_display_title(location, guests_raw):
+    """Wikipedia's Running Man tables have no 'Title' column — the show
+    doesn't carry per-episode titles the way sitcoms do. Location alone
+    (the old stand-in) reads like a stray address, so synthesize something
+    that actually reads like a title: the venue plus the standout guest(s),
+    e.g. 'Seoul Arts Center ft. Max Changmin & U-Know Yunho'."""
+    loc = location if location and location != "N/A" else "Unknown Location"
+    names = split_guest_names(guests_raw)
+    if not names:
+        return loc
+    shown = names[:2]
+    suffix = " & more" if len(names) > 2 else ""
+    return f"{loc} ft. {' & '.join(shown)}{suffix}"
+
+
 def scrape_year(year, force=False):
     """Scrape (and cache) every episode row for a given year page."""
     with _CACHE_LOCK:
@@ -210,6 +236,9 @@ def scrape_year(year, force=False):
                     episodes.append({
                         "Episode": ep_text,
                         "Year": year,
+                        "Title": build_display_title(
+                            cell(data_cells, "Location"), cell(data_cells, "Guest(s)")
+                        ),
                         "Air Date": cell(data_cells, "Air Date"),
                         "Location": cell(data_cells, "Location"),
                         "Guest(s)": cell(data_cells, "Guest(s)"),
