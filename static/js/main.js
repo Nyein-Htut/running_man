@@ -282,7 +282,7 @@ function renderResultList(results, headerText, count) {
     item.innerHTML = `
       <span class="result-ep">#${ep.Episode}</span>
       <div class="result-body">
-        <div class="result-title">${escapeHtml(ep.Title || ep.Location || 'Location unknown')}</div>
+        <div class="result-title" id="titleFor${ep.Episode}">${escapeHtml(ep.Title || ep.Location || 'Location unknown')}</div>
         <div class="result-meta">${escapeHtml(ep['Guest(s)'] || 'N/A')}</div>
       </div>
       <span class="result-year">${escapeHtml(ep.Year)}</span>`;
@@ -294,6 +294,32 @@ function renderResultList(results, headerText, count) {
     });
     container.appendChild(item);
   });
+
+  loadRealTitles(results.map(ep => ep.Episode));
+}
+
+/* ---------------------------------------------------------------------
+   Real episode titles (from MyDramaList) — the list already renders
+   instantly with a synthesized Location+Guest(s) placeholder title;
+   this fills in the actual episode title per row as it comes back,
+   same progressive-enhancement pattern as the cast photo cards.
+   --------------------------------------------------------------------- */
+async function loadRealTitles(episodeNums) {
+  if (!episodeNums || episodeNums.length === 0) return;
+
+  try {
+    const res = await fetch(`/api/episode-titles?nums=${episodeNums.join(',')}`);
+    const data = await res.json();
+    if (!res.ok || !data.titles) return;
+
+    Object.entries(data.titles).forEach(([epNum, title]) => {
+      if (!title) return; // no distinct title on MDL — keep the placeholder
+      const el = document.getElementById(`titleFor${epNum}`);
+      if (el) el.textContent = title;
+    });
+  } catch (err) {
+    // Silent — the synthesized placeholder titles remain, nothing breaks.
+  }
 }
 
 function goBackToList() {
