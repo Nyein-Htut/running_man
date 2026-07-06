@@ -112,7 +112,13 @@ def scrape_year(year, force=False):
                     idx = col_map.get(field)
                     if idx is None or idx >= len(td_cells):
                         return "N/A"
-                    return clean_text(td_cells[idx].text) or "N/A"
+                    # Use a separator between sub-elements (Wikipedia guest
+                    # cells often list multiple names with <br> or <li> tags
+                    # rather than commas — plain .text would merge them into
+                    # one run-on string with no delimiter at all).
+                    raw = td_cells[idx].get_text(separator=", ")
+                    raw = re.sub(r"(,\s*)+", ", ", raw).strip(", ").strip()
+                    return clean_text(raw) or "N/A"
 
                 for row in table.find_all("tr"):
                     th_cells = row.find_all("th")
