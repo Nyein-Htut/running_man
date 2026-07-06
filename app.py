@@ -167,6 +167,79 @@ def matches_keywords(ep, keywords):
 
 
 # ---------------------------------------------------------------------------
+# Guest headshot lookup — Wikipedia's public REST API (no scraping of Google
+# Images / arbitrary sites: that would violate ToS, get IP-blocked quickly,
+# and return photos with unclear licensing). Wikipedia's summary endpoint is
+# free to call, stable, and its images carry known licenses.
+# ---------------------------------------------------------------------------
+GUEST_IMAGE_CACHE = {}
+GUEST_IMAGE_LOCK = threading.Lock()
+GUEST_IMAGE_TTL_SECONDS = 60 * 60 * 24 * 7  # 1 week — headshots rarely change
+
+WIKI_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{}"
+WIKI_SEARCH_URL = "https://en.wikipedia.org/w/api.php"
+
+
+def split_guest_names(raw):
+    """'Guest(s)' cell is a free-text, comma/'and'-separated list of names."""
+    if not raw or raw == "N/A":
+        return []
+    raw = re.sub(r"\(.*?\)", "", raw)  # drop parenthetical roles/notes
+    parts = re.split(r",| and |&", raw)
+    names = [p.strip() for p in parts if p.strip() and len(p.strip()) > 1]
+    seen = set()
+    out = []
+    for n in names:
+        key = n.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(n)
+    return out
+
+
+def fetch_guest_image(name):
+    """Look up a guest's Wikipedia thumbnail + page link. Cached per name."""
+    key = name.lower()
+    with GUEST_IMAGE_LOCK:
+        cached = GUEST_IMAGE_CACHE.get(key)
+        if cached and (time.time() - cached["fetched_at"] < GUEST_IMAGE_TTL_SECONDS):
+            return cached["data"]
+
+    result = {"name": name, "image": None, "wiki_url": None, "extract": None}
+
+    try:
+        # Step 1: resolve to the best-matching Wikipedia page title.
+        search_res = requests.get(
+            WIKI_SEARCH_URL,
+            params={
+                "action": "query", "list": "search", "srsearch": name,
+                "format": "json", "srlimit": 1,
+            },
+            headers=HEADERS, timeout=8,
+        )
+        search_hits = search_res.json().get("query", {}).get("search", [])
+        page_title = search_hits[0]["title"] if search_hits else name
+
+        # Step 2: fetch the summary (thumbnail image lives here).
+        summary_res = requests.get(
+            WIKI_SUMMARY_URL.format(requests.utils.quote(page_title)),
+            headers=HEADERS, timeout=8,
+        )
+        if summary_res.status_code == 200:
+            summary = summary_res.json()
+            thumbnail = summary.get("thumbnail", {}).get("source")
+            result["image"] = thumbnail
+            result["wiki_url"] = summary.get("content_urls", {}).get("desktop", {}).get("page")
+            result["extract"] = clean_text(summary.get("extract", ""))[:160] or None
+    except (requests.RequestException, ValueError, KeyError, IndexError):
+        pass
+
+    with GUEST_IMAGE_LOCK:
+        GUEST_IMAGE_CACHE[key] = {"data": result, "fetched_at": time.time()}
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @app.route("/")
@@ -233,6 +306,18 @@ def api_faq_results(slug):
         "count": len(results),
         "results": results[:60],
     })
+
+
+@app.route("/api/guest-images")
+def api_guest_images():
+    """Batch cast-photo lookup, e.g. /api/guest-images?names=Kim Jong-kook,Song Ji-hyo"""
+    raw = request.args.get("names", "").strip()
+    if not raw:
+        return jsonify({"error": "Provide a comma-separated 'names' param."}), 400
+
+    names = split_guest_names(raw)[:12]  # keep batches sane
+    guests = [fetch_guest_image(n) for n in names]
+    return jsonify({"guests": guests})
 
 
 @app.route("/api/status")
