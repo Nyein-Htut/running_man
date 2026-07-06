@@ -71,32 +71,103 @@ def direct_rows(table):
     return [tr for tr in table.find_all("tr") if tr.find_parent("table") is table]
 
 
-def map_table_columns(table):
-    """Inspect a wikitable's header row and return {field_name: td_index}.
+MAX_TABLE_COLUMNS = 24  # safety cap against pathological rowspan bookkeeping
 
-    td_index is the position within the <td> cells of a data row (i.e. NOT
-    counting the leading <th> episode-number cell). Returns None if no
-    header row with recognizable <th> labels is found.
+
+def build_grid(table):
+    """Convert a wikitable into a list of rows, each a list of (text, is_th)
+    tuples aligned to real column positions — correctly accounting for
+    rowspan/colspan.
+
+    This matters because some rows genuinely have FEWER <td> elements than
+    the header implies. E.g. two-part specials where episode A and episode B
+    share the same guest lineup: Wikipedia gives the Guest(s) cell in
+    episode A's row a rowspan of 2, and episode B's row has NO Guest(s) <td>
+    at all — it's simply absent from the DOM for that row. Naively reading
+    td_cells[fixed_index] on episode B's row would then read the *next*
+    column's data (Location) into the Guest(s) slot, and so on down the
+    line. This function "fills in" the carried-over cell so every row lines
+    up with the correct column regardless of skipped/spanned cells.
+    """
+    grid = []
+    pending = {}  # col_index -> [remaining_rows, text, is_th]
+
+    for row in direct_rows(table):
+        cells = row.find_all(["th", "td"], recursive=False)
+        cell_iter = iter(cells)
+        current_cell = next(cell_iter, None)
+        col_idx = 0
+        row_result = []
+
+        while col_idx < MAX_TABLE_COLUMNS and (
+            current_cell is not None or col_idx in pending
+        ):
+            if col_idx in pending and pending[col_idx][0] > 0:
+                remaining, text, is_th = pending[col_idx]
+                row_result.append((text, is_th))
+                if remaining - 1 <= 0:
+                    del pending[col_idx]
+                else:
+                    pending[col_idx][0] = remaining - 1
+                col_idx += 1
+                continue
+
+            if current_cell is None:
+                break
+
+            try:
+                colspan = int(current_cell.get("colspan", 1) or 1)
+            except ValueError:
+                colspan = 1
+            try:
+                rowspan = int(current_cell.get("rowspan", 1) or 1)
+            except ValueError:
+                rowspan = 1
+
+            raw = current_cell.get_text(separator=", ")
+            raw = re.sub(r"(,\s*)+", ", ", raw).strip(", ").strip()
+            text = clean_text(raw)
+            is_th = current_cell.name == "th"
+
+            for _ in range(max(colspan, 1)):
+                row_result.append((text, is_th))
+                if rowspan > 1:
+                    pending[col_idx] = [rowspan - 1, text, is_th]
+                col_idx += 1
+
+            current_cell = next(cell_iter, None)
+
+        grid.append(row_result)
+
+    return grid
+
+
+def map_table_columns(grid):
+    """Inspect a grid's header row and return {field_name: col_index}.
+
+    col_index is the position within a data row's cells AFTER the leading
+    episode-number column (i.e. index 0 of row[1:]).
     """
     header_row = None
-    for row in direct_rows(table):
-        ths = row.find_all("th", recursive=False)
+    for row in grid:
+        ths = [c for c in row if c[1]]
         # A real header row has several th's with text; the episode-number
         # rows have exactly one th (the ep. number) followed by td's.
         if len(ths) >= 3:
-            header_row = ths
+            header_row = row
             break
     if not header_row:
         return None
 
-    # The first th is usually "Ep." — the rest correspond to td positions.
-    labels = [clean_text(th.get_text(" ")).lower() for th in header_row[1:]]
+    # The first column is usually "Ep." — the rest correspond to positions
+    # within row[1:].
+    labels = [text.lower() for text, _ in header_row[1:]]
 
     mapping = {}
-    for td_index, label in enumerate(labels):
+    for col_index, label in enumerate(labels):
         for field_name, keywords in COLUMN_MATCHERS:
             if field_name not in mapping and any(k in label for k in keywords):
-                mapping[field_name] = td_index
+                mapping[field_name] = col_index
     return mapping or None
 
 
@@ -115,40 +186,37 @@ def scrape_year(year, force=False):
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
             for table in soup.find_all("table", class_="wikitable"):
-                col_map = map_table_columns(table)
+                grid = build_grid(table)
+                col_map = map_table_columns(grid)
                 if not col_map:
                     continue  # not an episode table (e.g. ratings/awards table)
 
-                def cell(td_cells, field):
+                def cell(data_cells, field):
                     idx = col_map.get(field)
-                    if idx is None or idx >= len(td_cells):
+                    if idx is None or idx >= len(data_cells):
                         return "N/A"
-                    # Use a separator between sub-elements (Wikipedia guest
-                    # cells often list multiple names with <br> or <li> tags
-                    # rather than commas — plain .text would merge them into
-                    # one run-on string with no delimiter at all).
-                    raw = td_cells[idx].get_text(separator=", ")
-                    raw = re.sub(r"(,\s*)+", ", ", raw).strip(", ").strip()
-                    return clean_text(raw) or "N/A"
+                    text = data_cells[idx][0]
+                    return text or "N/A"
 
-                for row in direct_rows(table):
-                    th_cells = row.find_all("th", recursive=False)
-                    td_cells = row.find_all("td", recursive=False)
+                for row in grid:
+                    if not row or not row[0][1]:  # first cell must be a <th>
+                        continue
+                    ep_text = row[0][0]
+                    data_cells = row[1:]
 
-                    if th_cells and len(td_cells) >= 4:
-                        ep_text = clean_text(th_cells[0].text)
-                        if not ep_text.isdigit():
-                            continue
-                        episodes.append({
-                            "Episode": ep_text,
-                            "Year": year,
-                            "Air Date": cell(td_cells, "Air Date"),
-                            "Location": cell(td_cells, "Location"),
-                            "Guest(s)": cell(td_cells, "Guest(s)"),
-                            "Teams": cell(td_cells, "Teams"),
-                            "Mission": cell(td_cells, "Mission"),
-                            "Results": cell(td_cells, "Results"),
-                        })
+                    if not ep_text.isdigit() or len(data_cells) < 4:
+                        continue
+
+                    episodes.append({
+                        "Episode": ep_text,
+                        "Year": year,
+                        "Air Date": cell(data_cells, "Air Date"),
+                        "Location": cell(data_cells, "Location"),
+                        "Guest(s)": cell(data_cells, "Guest(s)"),
+                        "Teams": cell(data_cells, "Teams"),
+                        "Mission": cell(data_cells, "Mission"),
+                        "Results": cell(data_cells, "Results"),
+                    })
     except requests.RequestException:
         pass
 
