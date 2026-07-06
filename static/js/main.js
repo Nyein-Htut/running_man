@@ -104,7 +104,7 @@ function renderEpisodeCard(data, showBackArrow) {
     <div class="episode-card">
       ${backArrowHtml}
       <p class="eyebrow-tag">EPISODE ${data.Episode}</p>
-      <h3>${escapeHtml(data.Location || 'Location unknown')}</h3>
+      <h3>${escapeHtml(data.Title || data.Location || 'Location unknown')}</h3>
       <div class="chip-row">
         <span class="stat-chip">📅 ${escapeHtml(data.Year)}</span>
         <span class="stat-chip">🎤 ${guestCount} Guest${guestCount !== 1 ? 's' : ''}</span>
@@ -282,7 +282,7 @@ function renderResultList(results, headerText, count) {
     item.innerHTML = `
       <span class="result-ep">#${ep.Episode}</span>
       <div class="result-body">
-        <div class="result-title">${escapeHtml(ep.Location || 'Location unknown')}</div>
+        <div class="result-title">${escapeHtml(ep.Title || ep.Location || 'Location unknown')}</div>
         <div class="result-meta">${escapeHtml(ep['Guest(s)'] || 'N/A')}</div>
       </div>
       <span class="result-year">${escapeHtml(ep.Year)}</span>`;
