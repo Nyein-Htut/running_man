@@ -1,3 +1,5 @@
+import json
+import os
 import re
 import time
 import threading
@@ -45,6 +47,19 @@ MDL_TITLE_CACHE = {}
 MDL_TITLE_LOCK = threading.Lock()
 MDL_TITLE_TTL_SECONDS = 60 * 60 * 24 * 30  # 30 days
 
+# Pre-scraped titles committed alongside the app (see scripts/scrape_mdl_titles.py
+# and its module docstring for why this is scraped offline rather than live —
+# MyDramaList's bot protection blocks plain server-side requests from
+# datacenter IPs like Render's almost 100% of the time). Keys are episode
+# numbers as strings; a value of null/None means MDL genuinely has no
+# distinct title for that episode (not a fetch failure).
+_STATIC_TITLES_PATH = os.path.join(os.path.dirname(__file__), "data", "episode_titles.json")
+try:
+    with open(_STATIC_TITLES_PATH, "r", encoding="utf-8") as _f:
+        STATIC_EPISODE_TITLES = json.load(_f)
+except (FileNotFoundError, json.JSONDecodeError):
+    STATIC_EPISODE_TITLES = {}
+
 # Matches meta property="og:title" content="Running Man Episode 27: Phantom of the Running Man"
 _MDL_OGTITLE_RE = re.compile(r'property="og:title"\s+content="([^"]+)"')
 # Strips the "Running Man Episode 27: " prefix, leaving just the title
@@ -52,8 +67,15 @@ _MDL_PREFIX_RE = re.compile(r"^Running Man Episode\s+\d+\s*[:\-]\s*(.+)$", re.IG
 
 
 def fetch_mdl_title(ep_num):
-    """Look up Episode `ep_num`'s real title from MyDramaList. Returns None
-    if the episode has no distinct title there, or the request fails."""
+    """Look up Episode `ep_num`'s real title. Checks the pre-scraped static
+    dataset first (fast, reliable); only falls back to a live MyDramaList
+    request for episodes not yet present there (e.g. ones that aired after
+    the dataset was last regenerated). Returns None if the episode has no
+    distinct title, or the live fallback fails."""
+    key = str(ep_num)
+    if key in STATIC_EPISODE_TITLES:
+        return STATIC_EPISODE_TITLES[key]
+
     with MDL_TITLE_LOCK:
         cached = MDL_TITLE_CACHE.get(ep_num)
         if cached and (time.time() - cached["fetched_at"] < MDL_TITLE_TTL_SECONDS):
@@ -62,9 +84,17 @@ def fetch_mdl_title(ep_num):
     title = None
     try:
         res = requests.get(MDL_EPISODE_URL.format(ep_num), headers=HEADERS, timeout=8)
-        if res.status_code == 200:
+        if res.status_code != 200:
+            # Likely sign of anti-bot blocking (403/429) rather than a genuine
+            # 404 — MDL uses Cloudflare-style protection that can reject
+            # plain server-side requests. Check Render logs for this line.
+            print(f"[mdl_title] ep {ep_num}: HTTP {res.status_code}, body starts: {res.text[:200]!r}")
+        else:
             match = _MDL_OGTITLE_RE.search(res.text)
-            if match:
+            if not match:
+                print(f"[mdl_title] ep {ep_num}: got HTTP 200 but no og:title meta found "
+                      f"(page may require JS / different markup). Body length: {len(res.text)}")
+            else:
                 og_title = clean_text(match.group(1))
                 prefix_match = _MDL_PREFIX_RE.match(og_title)
                 if prefix_match:
@@ -73,8 +103,10 @@ def fetch_mdl_title(ep_num):
                     # not worth surfacing as a "title".
                     if candidate and not re.match(r"^Episode\s+\d+$", candidate, re.IGNORECASE):
                         title = candidate
-    except requests.RequestException:
-        pass
+                if title is None:
+                    print(f"[mdl_title] ep {ep_num}: og:title was {og_title!r} — no distinct title parsed out")
+    except requests.RequestException as exc:
+        print(f"[mdl_title] ep {ep_num}: request failed: {exc!r}")
 
     with MDL_TITLE_LOCK:
         MDL_TITLE_CACHE[ep_num] = {"title": title, "fetched_at": time.time()}
@@ -407,6 +439,8 @@ def split_guest_names(raw):
     """'Guest(s)' cell is a free-text, comma/'and'-separated list of names."""
     if not raw or raw == "N/A":
         return []
+    if re.match(r"^\s*no\s+guests?\s*$", raw, re.IGNORECASE):
+        return []  # the literal placeholder text, not an actual guest name
     raw = re.sub(r"\(.*?\)", "", raw)  # drop parenthetical roles/notes
     parts = re.split(r",| and |&", raw)
     names = [p.strip() for p in parts if p.strip() and len(p.strip()) > 1]
