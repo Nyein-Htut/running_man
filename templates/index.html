@@ -5,57 +5,62 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Running Man Index — Episode Archive</title>
 <meta name="description" content="Look up any Running Man episode's guests, missions and results in seconds.">
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Anton&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500;1,9..144,600&family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
 
-<div class="grain"></div>
-
 <header class="site-header">
   <div class="header-inner">
     <div class="brand">
-      <span class="brand-tag">RM</span>
-      <span class="brand-word">RUNNING&nbsp;MAN</span>
+      <span class="brand-mark">running man</span>
+      <span class="brand-word">Index</span>
     </div>
-    <div class="brand-sub">EPISODE INDEX</div>
+    <div class="brand-sub">Est. 2010</div>
   </div>
-  <div class="header-strip"></div>
 </header>
 
 <main>
   <section class="hero">
-    <p class="eyebrow">01 · Est. 2010 &nbsp;—&nbsp; 800+ episodes archived</p>
-    <h1 class="hero-title">FIND THE&nbsp;<span class="rip-word">MISSION</span></h1>
-    <p class="hero-sub">Pull air dates, guests, teams and results straight from the archive. Type a number, search a name, or grab a name tag below.</p>
+    <div class="hero-copy">
+      <p class="eyebrow">The archive &nbsp;·&nbsp; 800+ episodes catalogued</p>
+      <h1 class="hero-title">Find the <em>mission</em></h1>
+      <p class="hero-sub">Air dates, guests, teams, and results — drawn straight from the record. Search by number, by name, or start from a theme.</p>
+    </div>
 
     <div class="search-card">
       <div class="search-row">
-        <span class="search-icon">#</span>
-        <input id="episodeInput" type="text" inputmode="numeric" placeholder="Episode number, e.g. 500" autocomplete="off">
-        <button id="episodeBtn" class="tear-btn">
-          <span class="tear-btn-label">Search</span>
-          <span class="tear-notch"></span>
+        <span class="search-icon">№</span>
+        <input id="episodeInput" type="text" inputmode="numeric" placeholder="Episode number — e.g. 500" autocomplete="off">
+        <button id="episodeBtn" class="gold-btn">
+          <span class="btn-label">Search</span>
         </button>
       </div>
-      <div class="divider"><span>or search by keyword</span></div>
+      <div class="divider"><span>or by keyword</span></div>
       <div class="search-row">
         <span class="search-icon">⌕</span>
-        <input id="keywordInput" type="text" placeholder="Guest name, mission, title..." autocomplete="off">
-        <button id="keywordBtn" class="tear-btn tear-btn-alt">
-          <span class="tear-btn-label">Search</span>
-          <span class="tear-notch"></span>
+        <input id="keywordInput" type="text" placeholder="Guest, mission, or title..." autocomplete="off">
+        <button id="keywordBtn" class="gold-btn gold-btn-outline">
+          <span class="btn-label">Search</span>
         </button>
       </div>
       <p id="statusLine" class="status-line">Ready when you are.</p>
+
+      <div id="resultsArea" class="results-area">
+        <div class="placeholder">
+          <span class="placeholder-mark">✦</span>
+          <p>Waiting on a search.<br>Your episode record will appear right here.</p>
+        </div>
+      </div>
     </div>
   </section>
 
   <section class="faq-section">
-    <p class="eyebrow">02 · Popular name tags</p>
-    <h2 class="section-title">Jump straight to a theme</h2>
+    <p class="eyebrow">Start from a theme</p>
+    <h2 class="section-title">Popular name tags</h2>
     <div class="chip-grid" id="faqGrid">
       {% for f in faq_presets %}
       <button class="faq-chip" data-slug="{{ f.slug }}">
@@ -65,22 +70,11 @@
       {% endfor %}
     </div>
   </section>
-
-  <section class="results-section">
-    <p class="eyebrow">03 · Results</p>
-    <div id="resultsArea" class="results-area">
-      <div class="placeholder">
-        <div class="placeholder-tag">
-          <span class="placeholder-emoji">🎯</span>
-        </div>
-        <p>Waiting on a search.<br>Your episode record will land right here.</p>
-      </div>
-    </div>
-  </section>
 </main>
 
 <footer class="site-footer">
-  <p>Data pulled live from Wikipedia's Running Man episode lists · Built for fans, hosted on Render</p>
+  <p class="footer-credit">© 2026 Built by Irene <a href="https://github.com/Nyein-Htut" target="_blank" rel="noopener">(github.com/Nyein-Htut)</a></p>
+  <p class="footer-note">Data pulled live from Wikipedia's Running Man episode lists</p>
 </footer>
 
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
