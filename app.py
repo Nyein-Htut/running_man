@@ -543,6 +543,9 @@ def api_status():
         "server_time": datetime.utcnow().isoformat() + "Z",
     })
 
-
+@app.route('/health')
+def health():
+    return "OK", 200
+    
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
